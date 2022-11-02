@@ -8,31 +8,19 @@ from tqdm import tqdm
 import sqlite3
 import requests
 
-def get_stream(url):
-    output = ''
-    s = requests.Session()
 
-    try:
-        with s.get(url, headers=None, stream=True) as resp:
-            for line in resp.iter_lines():
-                if line:
-                    output += line.decode('utf-8')
-                    break # Need only one stream to figure validators data
-    except Exception:
-        return None
-    # write_lines_to_file(output)
-    return output
-
-def write_lines_to_file(lines):
-    with open('/tmp/vitals_response.txt', 'w') as fin:
-        for line in lines:
-            fin.write(line)
-
-
-def extract_validators_data(output):
-    p = re.compile('"account_address":"[a-zA-Z0-9\.]+"|"validator_ip":"[0-9\.]+"|"vfn_ip":"[0-9\.]+"')
-    res = p.findall(output)
-    return res
+def fetch_validators_ips_and_account():
+    r = requests.get('https://0lexplorer.io/api/webmonitor/vitals')
+    data = r.json()
+    data_to_be_inserted = []
+    for entry in data['chain_view']['validator_view']:
+        entry_organized_data = {
+            'account_address': entry['account_address'],
+            'validator_ip': entry['validator_ip'],
+            'vfn_ip': entry['vfn_ip']
+        }
+        data_to_be_inserted.append(entry_organized_data)
+    return data_to_be_inserted
 
 def get_ip_location(ip):
     url = 'https://freeipapi.com/api/json/' + ip
@@ -61,19 +49,6 @@ def find_and_add_ip_geolocation(data_to_insert):
 
     return data_with_geolocation
 
-def organize_validators_data(validators_data):
-    ret = []
-    for i in range(0, len(validators_data), 3):
-        entry = {}
-        validator_account = validators_data[i].split(':')[1][1:-1]
-        validator_ip = validators_data[i+1].split(':')[1][1:-1]
-        vfn_ip = validators_data[i+2].split(':')[1][1:-1]
-        entry['account'] = validator_account
-        entry['validator_ip'] = validator_ip
-        entry['vfn_ip'] = vfn_ip
-        ret.append(entry)
-    return ret
-
 def connect_to_sqlite():
     try:
         conn = sqlite3.connect('validators_geo.db')
@@ -97,37 +72,11 @@ def connect_to_sqlite():
     return conn, curr
 
 def insert_validators_geo_data(conn, curr, validators_geo_data, now_timestamp):
-    curr.execute('INSERT INTO validators_geo_data VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', (str(uuid4()), validators_geo_data['account'], validators_geo_data['validator_ip'], validators_geo_data['vfn_ip'], validators_geo_data['validator_lat'], validators_geo_data['validator_lon'], validators_geo_data['vfn_lat'], validators_geo_data['vfn_lon'], now_timestamp))
+    curr.execute('INSERT INTO validators_geo_data VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', (str(uuid4()), validators_geo_data['account_address'], validators_geo_data['validator_ip'], validators_geo_data['vfn_ip'], validators_geo_data['validator_lat'], validators_geo_data['validator_lon'], validators_geo_data['vfn_lat'], validators_geo_data['vfn_lon'], now_timestamp))
     conn.commit()
 
-######################################################
-
-def write_json_to_file(output):
-    with open('/tmp/vitals_response.json', 'w') as fin:
-        json.dump(output, fin, indent=4, sort_keys=True)
-
-def fetch_validators_ips(conn, curr):
-    curr.execute('SELECT DISTINCT validator_ip FROM validators_geo_data')
-    validator_ips = curr.fetchall()
-    return [x[0] for x in validator_ips]
-
-def get_validator_state(ip):
-    url = 'http://'+ ip +':3030/vitals'
-    output = get_stream(url)
-    if output is None:
-        return None
-    jsons = output[5:]
-    output = json.loads(jsons)
-    write_json_to_file(output)
-    return state
-
-######################################################
-
 def collect_geo_data():
-    url = 'https://0lexplorer.io/api/webmonitor/vitals'
-    output = get_stream(url)
-    validators_data = extract_validators_data(output)
-    initial_data = organize_validators_data(validators_data)
+    initial_data = fetch_validators_ips_and_account()
     data_with_geolocation = find_and_add_ip_geolocation(initial_data)
     conn, curr = connect_to_sqlite()
     now_timestamp = datetime.now().timestamp()
